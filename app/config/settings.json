@@ -1,0 +1,8 @@
+{
+  "schedule_enabled": true,
+  "schedule_time": "03:00",
+  "max_worker_threads": 4,
+  "batch_size": 100,
+  "chroma_persist_dir": "data/chroma_db",
+  "chroma_collection_name": "prama_documents"
+}

@@ -1,0 +1,6 @@
+{
+  "chroma_host": "new-chroma-host",
+  "chroma_port": 8001,
+  "batch_size": 200,
+  "max_worker_threads": 8
+}
