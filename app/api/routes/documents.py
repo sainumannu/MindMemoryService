@@ -251,9 +251,21 @@ async def create_document(document: Dict[str, Any] = Body(...)):
         # Salva il documento con i parametri corretti
         doc_id = document.get('id', str(uuid.uuid4()))
         content = document.get('content', '')
+        collection = document.get('collection', 'default')
         metadata = document.get('metadata', {})
         
-        success = get_metadata_manager().add_document(doc_id, content, metadata)
+        # IMPORTANTE: Crea il documento completo con collection come campo separato
+        # NON mettere collection nei metadata, ma come campo top-level
+        document_data = {
+            'id': doc_id,
+            'collection': collection,
+            'content': content,
+            'metadata': metadata
+        }
+        
+        # Usa il metadata_db direttamente per salvare con la struttura corretta
+        manager = get_metadata_manager()
+        success = manager.metadata_db.add_document(document_data)
         
         if not success:
             raise HTTPException(

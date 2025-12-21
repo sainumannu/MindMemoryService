@@ -394,7 +394,7 @@ class SQLiteMetadataManager:
             # Preparazione campi
             doc_id = document.get('id', '')
             filename = document.get('filename', '')
-            collection = document.get('collection', document.get('collection_name', ''))
+            collection = document.get('collection', document.get('collection_name', 'default'))
             content = document.get('content', '')  # Salviamo anche il contenuto
             
             conn.execute("BEGIN TRANSACTION")
@@ -432,7 +432,11 @@ class SQLiteMetadataManager:
             
             # Inserisci i metadati
             metadata = document.get('metadata', {})
+            logger.debug(f"Salvataggio metadata per documento {doc_id}: {metadata}")
+            logger.debug(f"Numero di metadata keys: {len(metadata)}")
+            
             for key, value in metadata.items():
+                logger.debug(f"  Salvando metadata: {key} = {value} (tipo: {type(value)})")
                 value_type = "str"
                 if isinstance(value, int):
                     value_type = "int"
@@ -448,7 +452,9 @@ class SQLiteMetadataManager:
                     "INSERT INTO document_metadata (document_id, key, value, value_type) VALUES (?, ?, ?, ?)",
                     (document.get('id', ''), key, str(value), value_type)
                 )
+                logger.debug(f"  Metadata {key} salvato con successo")
             
+            logger.debug(f"Totale metadata salvati: {len(metadata)}")
             conn.commit()
             conn.close()
             return True
