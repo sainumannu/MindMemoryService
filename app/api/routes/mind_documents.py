@@ -134,6 +134,9 @@ async def create_mind_document(document: Dict[str, Any] = Body(...)):
         if 'created_at' not in validated_doc['metadata']:
             validated_doc['metadata']['created_at'] = datetime.now().isoformat()
         
+        # IMPORTANTE: Aggiungi collection ai metadata per il salvataggio
+        validated_doc['metadata']['collection'] = validated_doc['collection']
+        
         # Salva il documento in ENTRAMBI i database (SQLite + ChromaDB)
         manager = get_metadata_manager()
         success = manager.add_document(
@@ -280,6 +283,9 @@ async def update_mind_document(document_id: str, document: Dict[str, Any] = Body
         if 'created_at' in existing.get('metadata', {}):
             updated_doc['metadata']['created_at'] = existing['metadata']['created_at']
         
+        # IMPORTANTE: Aggiungi collection ai metadata per il salvataggio
+        updated_doc['metadata']['collection'] = updated_doc['collection']
+        
         # Aggiorna in ENTRAMBI i database (SQLite + ChromaDB)
         success = manager.add_document(
             doc_id=updated_doc['id'],
@@ -399,7 +405,8 @@ async def query_mind_documents(
         results = manager.search_documents(
             query=query_text,
             limit=limit,
-            where=None
+            where=None,
+            collection_name=collection_name  # Specifica la collection
         )
         
         if not results:
