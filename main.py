@@ -10,9 +10,12 @@ Questo servizio fornisce:
 5. Monitoraggio avanzato delle modifiche ai file
 """
 
+
 import os
 import sys
 import logging
+import signal
+import traceback
 from datetime import datetime
 import uvicorn
 from fastapi import FastAPI, Depends
@@ -34,7 +37,27 @@ from app.utils.file_watcher import FileWatcher, start_file_watcher, FileChange
 load_dotenv()
 
 # Configura logger
+# Configura logger
 logger = setup_logging()
+
+# --- HANDLER GLOBALE ECCEZIONI E SEGNALI ---
+def log_uncaught_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    msg = "\n[UNCAUGHT EXCEPTION] {}: {}\n{}".format(
+        exc_type.__name__, exc_value, ''.join(traceback.format_tb(exc_traceback)))
+    logger.critical(msg)
+    print(msg, file=sys.stderr)
+
+def handle_signal(sig, frame):
+    logger.critical(f"Ricevuto segnale {sig}. Stacktrace:\n{''.join(traceback.format_stack(frame))}")
+    print(f"[CRITICAL] Ricevuto segnale {sig}. Stacktrace:\n{''.join(traceback.format_stack(frame))}", file=sys.stderr)
+    sys.exit(1)
+
+sys.excepthook = log_uncaught_exception
+for sig in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(sig, handle_signal)
 
 # Variabile globale per il file watcher
 file_watcher = None

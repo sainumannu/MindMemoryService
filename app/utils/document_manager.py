@@ -348,11 +348,25 @@ class DocumentManager:
                 # DEBUG: Log delle distanze
                 print(f"[DEBUG] Doc {i}: distance={distance}, similarity={similarity_score}")
                 
+                doc_id = ids[i] if i < len(ids) else f"doc_{i}"
+                
+                # 🔧 FIX: Enrichisci metadati da ChromaDB con metadati completi da SQLite
+                # ChromaDB contiene solo metadati sparse, SQLite ha TUTTI i metadati incluso tags
+                chroma_metadata = metadatas[i] if i < len(metadatas) else {}
+                
+                # Tenta di ottenere metadati completi da SQLite (incluso tags)
+                sqlite_doc = self.metadata_db.get_document(doc_id)
+                if sqlite_doc:
+                    # Usa i metadati da SQLite, ma mantieni lo score da ChromaDB
+                    complete_metadata = sqlite_doc.get('metadata', chroma_metadata)
+                else:
+                    complete_metadata = chroma_metadata
+                
                 doc_data = {
-                    'id': ids[i] if i < len(ids) else f"doc_{i}",
+                    'id': doc_id,
                     'content': doc_content,
                     'similarity_score': similarity_score,
-                    'metadata': metadatas[i] if i < len(metadatas) else {}
+                    'metadata': complete_metadata
                 }
                 formatted_results.append(doc_data)
             

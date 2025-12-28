@@ -3,7 +3,7 @@ Modulo API del VectorstoreService.
 """
 
 from fastapi import APIRouter
-from app.api.routes import documents, reconciliation, health, stats, embeddings, api_gateway, vectorstore, settings, database, database_management, vectorstore_service_status, file_hashes, configuration
+from app.api.routes import documents, mind_documents, reconciliation, health, stats, embeddings, api_gateway, vectorstore, settings, database, database_management, vectorstore_service_status, file_hashes, configuration
 
 # Create API router
 api_router = APIRouter()
@@ -13,6 +13,9 @@ api_router.include_router(health.router, prefix="/health", tags=["health"])
 # RIMOSSO: collections.router (endpoint inutile che restituiva sempre [])
 # USO: /vectorstore/collections che funziona davvero!
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
+
+# 🧠 Mind-specific endpoints: Strict validation (content + metadata required together)
+api_router.include_router(mind_documents.router, tags=["mind"])
 api_router.include_router(reconciliation.router, prefix="/reconciliation", tags=["reconciliation"])
 api_router.include_router(stats.router, prefix="/stats", tags=["stats"])
 api_router.include_router(embeddings.router, prefix="/embeddings", tags=["embeddings"])
