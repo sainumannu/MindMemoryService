@@ -51,6 +51,8 @@ class SQLiteMetadataManager:
         """
         conn = sqlite3.connect(self.db_file)
         conn.row_factory = sqlite3.Row  # Per ottenere risultati come dizionari
+        # Abilita foreign keys per supportare ON DELETE CASCADE
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
     
     def _init_database(self) -> None:

@@ -134,9 +134,13 @@ async def create_mind_document(document: Dict[str, Any] = Body(...)):
         if 'created_at' not in validated_doc['metadata']:
             validated_doc['metadata']['created_at'] = datetime.now().isoformat()
         
-        # Salva il documento
+        # Salva il documento in ENTRAMBI i database (SQLite + ChromaDB)
         manager = get_metadata_manager()
-        success = manager.metadata_db.add_document(validated_doc)
+        success = manager.add_document(
+            doc_id=validated_doc['id'],
+            content=validated_doc['content'],
+            metadata=validated_doc['metadata']
+        )
         
         if not success:
             raise HTTPException(
@@ -276,8 +280,12 @@ async def update_mind_document(document_id: str, document: Dict[str, Any] = Body
         if 'created_at' in existing.get('metadata', {}):
             updated_doc['metadata']['created_at'] = existing['metadata']['created_at']
         
-        # Salva direttamente (SQLite supporta UPDATE via REPLACE)
-        success = manager.metadata_db.add_document(updated_doc)
+        # Aggiorna in ENTRAMBI i database (SQLite + ChromaDB)
+        success = manager.add_document(
+            doc_id=updated_doc['id'],
+            content=updated_doc['content'],
+            metadata=updated_doc['metadata']
+        )
         
         if not success:
             raise HTTPException(
@@ -328,8 +336,8 @@ async def delete_mind_document(document_id: str):
                 detail=f"Mind document {document_id} non trovato"
             )
         
-        # Delete
-        success = manager.metadata_db.delete_document(document_id)
+        # Elimina da ENTRAMBI i database (SQLite + ChromaDB)
+        success = manager.delete_document(document_id)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

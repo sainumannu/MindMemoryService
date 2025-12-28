@@ -5,6 +5,7 @@ Questo modulo implementa il pattern di coordinamento per la gestione dei documen
 tra ChromaDB (vector database) e SQLite (metadata database).
 """
 
+import json
 import logging
 import os
 from typing import Dict, List, Optional, Any, Union
@@ -95,11 +96,13 @@ class DocumentManager:
             bool: True se l'operazione ha successo, False altrimenti
         """
         try:
-            # Prepara documento per SQLite
+            # Prepara documento per SQLite (richiede 'metadata' come campo separato)
             document_data = {
                 'id': doc_id,
                 'content': content,
-                **metadata
+                'collection': metadata.get('collection', 'default'),
+                'filename': metadata.get('filename', ''),
+                'metadata': metadata  # metadata come campo separato per SQLite
             }
             
             # 1. Aggiungi sempre a SQLite per metadati e accesso diretto
@@ -113,11 +116,25 @@ class DocumentManager:
             
             if should_vectorize:
                 try:
-                    collection = self.vector_db.get_collection()
+                    # Usa la collection specificata nei metadata, o quella di default
+                    collection_name = metadata.get('collection')
+                    collection = self.vector_db.get_collection(collection_name)
                     if collection:
+                        # ChromaDB accetta solo str, int, float, bool nei metadata
+                        # Converti liste/dict in JSON strings
+                        chroma_metadata = {}
+                        for key, value in metadata.items():
+                            if isinstance(value, (list, dict)):
+                                chroma_metadata[key] = json.dumps(value, ensure_ascii=False)
+                            elif isinstance(value, (str, int, float, bool)):
+                                chroma_metadata[key] = value
+                            else:
+                                # Skip tipi non supportati
+                                logger.warning(f"Tipo non supportato per metadata ChromaDB: {key}={type(value)}")
+                        
                         collection.add(
                             documents=[content],
-                            metadatas=[metadata],
+                            metadatas=[chroma_metadata],
                             ids=[doc_id]
                         )
                         logger.info(f"Documento {doc_id} aggiunto anche a ChromaDB (vettorizzato)")
