@@ -92,39 +92,55 @@ async def get_documents(limit: int = 50, offset: int = 0):
         print(f"[DEBUG] IDs paginati: {paginated_ids}")
         
         print(f"[DEBUG] Recupero dettagli documenti...")
-        # Get detailed document information for paginated results
+        # Ottimizzazione: recupera tutti i documenti in batch invece di uno per uno
+        import time
+        start_batch = time.time()
+        
         documents = []
-        for i, doc_id in enumerate(paginated_ids):
-            print(f"[DEBUG] Elaborazione documento {i+1}/{len(paginated_ids)}: {doc_id}")
-            try:
-                # Prima prova SQLite
-                doc = manager.get_document(doc_id)
-                print(f"[DEBUG] SQLite per {doc_id}: {'trovato' if doc else 'non trovato'}")
-                
-                # Se non trovato in SQLite, prova ChromaDB
-                if not doc:
-                    print(f"[DEBUG] Tentativo ChromaDB per {doc_id}")
-                    try:
-                        collection = manager.vector_db.get_collection()
-                        if collection:
-                            chroma_data = collection.get(ids=[doc_id])
-                            if chroma_data and chroma_data.get('documents'):
-                                doc = {
-                                    'id': doc_id,
-                                    'content': chroma_data['documents'][0] if chroma_data['documents'] else '',
-                                    'metadata': chroma_data['metadatas'][0] if chroma_data.get('metadatas') and chroma_data['metadatas'] else {}
-                                }
-                                print(f"[DEBUG] ChromaDB per {doc_id}: documento ricostruito")
-                    except Exception as e:
-                        print(f"[DEBUG] Errore lettura documento {doc_id} da ChromaDB: {e}")
-                
-                if doc:
-                    documents.append(doc)
-                    print(f"[DEBUG] Documento {doc_id} aggiunto alla lista")
+        try:
+            # Tenta recupero batch da SQLite (molto più veloce)
+            conn = manager.metadata_db._get_db_connection()
+            cursor = conn.cursor()
+            placeholders = ','.join('?' * len(paginated_ids))
+            query = f"SELECT id, content, metadata, collection_name, created_at FROM documents WHERE id IN ({placeholders})"
+            cursor.execute(query, paginated_ids)
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            # Crea un dict per lookup veloce
+            docs_by_id = {}
+            for row in rows:
+                doc_id, content, metadata_json, collection_name, created_at = row
+                import json
+                metadata = json.loads(metadata_json) if metadata_json else {}
+                docs_by_id[doc_id] = {
+                    'id': doc_id,
+                    'content': content or '',
+                    'metadata': metadata,
+                    'collection_name': collection_name,
+                    'created_at': created_at
+                }
+            
+            # Mantieni l'ordine dei paginated_ids
+            for doc_id in paginated_ids:
+                if doc_id in docs_by_id:
+                    documents.append(docs_by_id[doc_id])
                     
-            except Exception as e:
-                print(f"[DEBUG] Errore elaborazione documento {doc_id}: {e}")
-                continue
+            batch_time = (time.time() - start_batch) * 1000
+            print(f"[PERF] Batch retrieval: {batch_time:.1f}ms for {len(documents)} docs")
+            
+        except Exception as e:
+            print(f"[DEBUG] Errore batch retrieval, fallback a loop: {e}")
+            # Fallback al metodo originale se batch fallisce
+            for i, doc_id in enumerate(paginated_ids):
+                try:
+                    doc = manager.get_document(doc_id)
+                    if doc:
+                        documents.append(doc)
+                except Exception as doc_e:
+                    print(f"[DEBUG] Errore elaborazione documento {doc_id}: {doc_e}")
+                    continue
         
         print(f"[DEBUG] Preparazione risposta finale...")
         result = {
@@ -415,9 +431,13 @@ async def query_collection(
     Returns:
         Dict: Search results with matches
     """
+    import time
+    start_total = time.time()
+    
     try:
         query_text = query_data.get("query_text", "")
-        top_k = query_data.get("top_k", 5)
+        # Supporta sia 'top_k' che 'n_results' per compatibilità
+        top_k = query_data.get("top_k") or query_data.get("n_results", 5)
         metadata_filter = query_data.get("metadata_filter", {})
         
         if not query_text:
@@ -429,10 +449,13 @@ async def query_collection(
         print(f"[DEBUG] Query collection '{collection_name}': '{query_text}' (top_k={top_k})")
         
         # Usa il DocumentManager per eseguire la ricerca
+        start_search = time.time()
         manager = get_metadata_manager()
         results = manager.search_documents(query_text, limit=top_k, where=metadata_filter)
+        search_time = (time.time() - start_search) * 1000
         
-        # Formatta i risultati nel formato atteso dal client
+        # Formatta i risultati nel formato atteso dal cliente
+        start_format = time.time()
         matches = []
         for result in results:
             match = {
@@ -442,6 +465,10 @@ async def query_collection(
                 "similarity_score": result.get("similarity_score", 0.0)  # Chiave corretta
             }
             matches.append(match)
+        format_time = (time.time() - start_format) * 1000
+        total_time = (time.time() - start_total) * 1000
+        
+        print(f"[PERF] Query endpoint: search={search_time:.1f}ms, format={format_time:.1f}ms, total={total_time:.1f}ms")
         
         print(f"[DEBUG] Query '{collection_name}' returned {len(matches)} matches")
         return {

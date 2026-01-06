@@ -14,6 +14,31 @@ from app.utils.sqlite_metadata_manager import SQLiteMetadataManager
 
 logger = logging.getLogger(__name__)
 
+# Singleton cache per il modello di embedding
+_embedding_model_cache = None
+
+def get_embedding_model():
+    """
+    Ottiene il modello di embedding con caching singleton.
+    Carica il modello una sola volta e lo riutilizza per tutte le query successive.
+    
+    Returns:
+        SentenceTransformer: Modello caricato e pronto all'uso
+    """
+    global _embedding_model_cache
+    
+    if _embedding_model_cache is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            logger.info("Caricamento modello sentence-transformers/all-MiniLM-L6-v2 (prima volta)...")
+            _embedding_model_cache = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+            logger.info("Modello caricato e cached con successo")
+        except ImportError:
+            logger.error("sentence-transformers non disponibile")
+            return None
+    
+    return _embedding_model_cache
+
 class DocumentManager:
     """
     Gestore centralizzato per documenti e metadati.
@@ -296,7 +321,7 @@ class DocumentManager:
             logger.error(f"Errore eliminazione documento {doc_id}: {e}")
             return False
     
-    def search_documents(self, query: str, limit: int = 10, where: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def search_documents(self, query: str, limit: int = 10, where: Optional[Dict[str, Any]] = None, collection_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Esegue ricerca semantica usando ChromaDB.
         
@@ -304,33 +329,37 @@ class DocumentManager:
             query: Query di ricerca
             limit: Numero massimo di risultati
             where: Filtri metadati (opzionale)
+            collection_name: Nome della collection (opzionale, usa default se None)
             
         Returns:
             Lista di documenti con score di similarità
         """
         try:
             # Usa ChromaDB per ricerca semantica
-            collection = self.vector_db.get_collection()
+            collection = self.vector_db.get_collection(collection_name)
             if not collection:
                 logger.warning("ChromaDB collection non disponibile per ricerca")
                 return []
             
-            # 🔧 FIX: Genera embedding con lo stesso modello usato per l'indicizzazione
-            try:
-                from sentence_transformers import SentenceTransformer
-                model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+            # 🔧 FIX: Genera embedding con modello cached (singleton)
+            import time
+            start_embed = time.time()
+            model = get_embedding_model()
+            if model is not None:
                 query_embedding = model.encode([query], normalize_embeddings=True)[0].tolist()
+                embed_time = (time.time() - start_embed) * 1000
                 
                 # Usa query_embeddings invece di query_texts per consistenza del modello
+                start_query = time.time()
                 results = collection.query(
                     query_embeddings=[query_embedding],  # ✅ Stesso modello dell'indicizzazione
                     n_results=limit,
                     where=where
                 )
+                query_time = (time.time() - start_query) * 1000
                 
-                print(f"[DEBUG] Usato embedding generato con sentence-transformers per query: '{query}'")
-                
-            except ImportError:
+                logger.info(f"Performance: embedding={embed_time:.1f}ms, chromadb_query={query_time:.1f}ms, total={embed_time+query_time:.1f}ms")
+            else:
                 logger.warning("sentence-transformers non disponibile, fallback a query_texts")
                 # Fallback al metodo originale
                 results = collection.query(
@@ -491,18 +520,18 @@ class DocumentManager:
     
     def sync_databases(self) -> Dict[str, Any]:
         """
-        Sincronizza i due database, risolvendo inconsistenze.
-        
-        Returns:
-            Dict con risultati della sincronizzazione
+        Sincronizza i due database, risolvendo inconsistenze e gestendo lo stato embedding.
+        Solo i documenti con embedding_status 'pending' o 'stale' vengono (ri)indicizzati in ChromaDB.
+        Dopo la sync, embedding_status viene aggiornato a 'ready'.
         """
         try:
             logger.info("Iniziando sincronizzazione database...")
-            
-            # Ottieni liste documenti
-            sqlite_docs = set(self.list_all_documents())
-            
-            # Per ChromaDB
+
+            # Ottieni tutti i documenti da SQLite
+            all_docs = self.metadata_db.get_documents(limit=100000)
+            ids_in_sqlite = set(doc['id'] for doc in all_docs if 'id' in doc)
+
+            # Ottieni tutti gli ID da ChromaDB
             chroma_docs = set()
             try:
                 collection = self.vector_db.get_collection()
@@ -512,23 +541,53 @@ class DocumentManager:
                         chroma_docs.update(result['ids'])
             except Exception as e:
                 logger.warning(f"Errore lettura ChromaDB durante sync: {e}")
-            
-            # Identifica inconsistenze
-            only_in_sqlite = sqlite_docs - chroma_docs
-            only_in_chroma = chroma_docs - sqlite_docs
-            
+
+            only_in_sqlite = ids_in_sqlite - chroma_docs
+            only_in_chroma = chroma_docs - ids_in_sqlite
+            actions_taken = []
+
+            # Sync: (ri)indicizza solo i documenti con embedding_status 'pending' o 'stale'
+            for doc in all_docs:
+                doc_id = doc.get('id')
+                embedding_status = doc.get('metadata', {}).get('embedding_status', 'pending')
+                if embedding_status in ('pending', 'stale'):
+                    content = doc.get('content', '')
+                    metadata = doc.get('metadata', {})
+                    should_vectorize = self._should_vectorize_content(content, metadata)
+                    if should_vectorize:
+                        try:
+                            collection = self.vector_db.get_collection(metadata.get('collection'))
+                            if collection:
+                                chroma_metadata = {}
+                                for key, value in metadata.items():
+                                    if isinstance(value, (list, dict)):
+                                        chroma_metadata[key] = json.dumps(value, ensure_ascii=False)
+                                    elif isinstance(value, (str, int, float, bool)):
+                                        chroma_metadata[key] = value
+                                collection.add(
+                                    documents=[content],
+                                    metadatas=[chroma_metadata],
+                                    ids=[doc_id]
+                                )
+                                # Aggiorna embedding_status a 'ready' e embedding_updated_at
+                                self.metadata_db.update_metadata(doc_id, 'embedding_status', 'ready')
+                                self.metadata_db.update_metadata(doc_id, 'embedding_updated_at', datetime.now().isoformat())
+                                actions_taken.append(f"Indicizzato {doc_id} in ChromaDB e aggiornato embedding_status a 'ready'")
+                        except Exception as e:
+                            logger.warning(f"Errore indicizzazione ChromaDB per {doc_id}: {e}")
+
             sync_result = {
-                'total_sqlite': len(sqlite_docs),
+                'total_sqlite': len(ids_in_sqlite),
                 'total_chroma': len(chroma_docs),
                 'only_in_sqlite': len(only_in_sqlite),
                 'only_in_chroma': len(only_in_chroma),
-                'synchronized': len(sqlite_docs & chroma_docs),
-                'actions_taken': []
+                'synchronized': len(ids_in_sqlite & chroma_docs),
+                'actions_taken': actions_taken
             }
-            
+
             logger.info(f"Sincronizzazione completata: {sync_result}")
             return sync_result
-            
+
         except Exception as e:
             logger.error(f"Errore sincronizzazione database: {e}")
             return {'error': str(e)}

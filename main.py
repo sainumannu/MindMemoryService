@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-PramaIA-VectorstoreService - Servizio centralizzato per la gestione del vectorstore.
+PramaIA-MindMemoryService - Servizio centralizzato per la gestione della memoria di Mind.
 
 Questo servizio fornisce:
 1. API REST completa per operazioni CRUD sul vectorstore
@@ -92,7 +92,7 @@ async def app_lifespan(app: FastAPI):
     global file_watcher
     
     try:
-        logger.info("Inizializzazione VectorstoreService...")
+        logger.info("Inizializzazione MindMemoryService...")
         
         # Inizializza ChromaDB Manager (in modalita persistente locale)
         from app.core.vectordb_manager import vector_db_manager
@@ -117,7 +117,7 @@ async def app_lifespan(app: FastAPI):
         )
         logger.info(f"File watcher avviato su {len(monitored_paths)} percorsi")
         
-        logger.info(f"VectorstoreService avviato con successo. Versione: 1.0.0")
+        logger.info(f"MindMemoryService avviato con successo. Versione: 1.0.0")
     except Exception as e:
         logger.error(f"Errore durante l'inizializzazione: {str(e)}")
         # In un ambiente di produzione, potremmo voler terminare il processo
@@ -128,20 +128,20 @@ async def app_lifespan(app: FastAPI):
     
     # --- Codice di shutdown ---
     try:
-        logger.info("Arresto VectorstoreService...")
+        logger.info("Arresto MindMemoryService...")
         
         # Arresta file watcher
         if file_watcher:
             file_watcher.stop()
             logger.info("File watcher arrestato.")
         
-        logger.info("VectorstoreService arrestato con successo.")
+        logger.info("MindMemoryService arrestato con successo.")
     except Exception as e:
         logger.error(f"Errore durante l'arresto: {str(e)}")
 
 # Crea applicazione FastAPI con il nuovo gestore del ciclo di vita
 app = FastAPI(
-    title="PramaIA VectorstoreService",
+    title="PramaIA MindMemoryService",
     description="Servizio centralizzato per la gestione del vectorstore e la riconciliazione con il filesystem",
     version="1.0.0",
     lifespan=app_lifespan  # Usiamo il nuovo gestore del ciclo di vita invece di on_event
@@ -212,16 +212,31 @@ async def reset_database_root():
         }
 
 if __name__ == "__main__":
-    port = int(os.getenv("VECTORSTORE_PORT", os.getenv("PORT", "8090")))  # Usa VECTORSTORE_PORT o PORT o default 8090
+    port = int(os.getenv("VECTORSTORE_PORT", os.getenv("PORT", "8090")))
     host = os.getenv("HOST", "0.0.0.0")
+    workers = int(os.getenv("WORKERS", "1"))  # Default 1 worker, configurabile via env
     
-    logger.info(f"Avvio VectorstoreService su http://{host}:{port}")
+    logger.info(f"Avvio MindMemoryService su http://{host}:{port}")
+    logger.info(f"Configurazione: {workers} worker(s), SQLite WAL mode, async FastAPI")
     
     # Avvia server Uvicorn
-    uvicorn.run(
-        "main:app", 
-        host=host, 
-        port=port, 
-        reload=False,  # Disabilitato il reload automatico per evitare riavvii non necessari
-        log_level=os.getenv("LOG_LEVEL", "info").lower()
-    )
+    if workers > 1:
+        # Multi-worker: usa uvicorn programmatically con gunicorn-style
+        logger.warning("Multi-worker richiede attenzione: singleton (model cache) sarà duplicato per worker")
+        uvicorn.run(
+            "main:app",
+            host=host,
+            port=port,
+            workers=workers,
+            reload=False,
+            log_level=os.getenv("LOG_LEVEL", "info").lower()
+        )
+    else:
+        # Single-worker: configurazione standard
+        uvicorn.run(
+            "main:app", 
+            host=host, 
+            port=port, 
+            reload=False,
+            log_level=os.getenv("LOG_LEVEL", "info").lower()
+        )
