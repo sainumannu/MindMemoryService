@@ -8,6 +8,7 @@ tra ChromaDB (vector database) e SQLite (metadata database).
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
 from app.core.vectordb_manager import VectorDBManager
 from app.utils.sqlite_metadata_manager import SQLiteMetadataManager
@@ -17,10 +18,101 @@ logger = logging.getLogger(__name__)
 # Singleton cache per il modello di embedding
 _embedding_model_cache = None
 
+def normalize_for_embedding(text: str, metadata: Dict[str, Any] = None) -> str:
+    """
+    Normalizza il testo per embedding: lowercase di default.
+    
+    Il testo viene convertito in lowercase per garantire consistenza
+    tra indicizzazione e query. Questo migliora significativamente
+    la similarity per testi identici ma con case diverso.
+    
+    Args:
+        text: Testo da normalizzare
+        metadata: Se metadata.get('preserve_case') == True, mantiene il case originale
+        
+    Returns:
+        str: Testo normalizzato (lowercase di default)
+    """
+    if not text:
+        return text
+    
+    # Rispetta preserve_case se esplicitamente richiesto
+    if metadata and metadata.get('preserve_case', False):
+        return text
+    
+    return text.lower()
+
+def extract_core_content(content: str, metadata: Dict[str, Any] = None) -> str:
+    """
+    Estrae il contenuto core da un documento, rimuovendo metadata e timestamp.
+    
+    Per documenti episodici, estrae solo il testo della conversazione/messaggio,
+    escludendo:
+    - Timestamp
+    - Prefissi "Conversation:", "User:", "System:"
+    - Metadata strutturati
+    - Duplicati
+    
+    Args:
+        content: Contenuto completo del documento
+        metadata: Metadata opzionali per contesto
+        
+    Returns:
+        str: Contenuto core pulito per embedding
+    """
+    if not content:
+        return content
+    
+    # Rimuovi timestamp all'inizio (formato: "Timestamp: YYYY-MM-DDTHH:MM:SS.mmmmmm")
+    import re
+    content_clean = re.sub(r'^Timestamp:\s*\d{4}-\d{2}-\d{2}T[\d:.]+\s*\n?', '', content, flags=re.MULTILINE)
+    
+    # Rimuovi prefisso "Conversation:" se presente
+    content_clean = re.sub(r'^Conversation:\s*', '', content_clean, flags=re.MULTILINE)
+    
+    # Per documenti episodici, estrai solo il testo dopo "User:" o simili
+    # Esempio: "User: testo qui\nSystem: risposta" -> "testo qui\nrisposta"
+    lines = content_clean.split('\n')
+    core_lines = []
+    seen_lines = set()  # Per rimuovere duplicati
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Rimuovi prefissi comuni
+        for prefix in ['User:', 'System:', 'Action:', 'Outcome:']:
+            if line.startswith(prefix):
+                line = line[len(prefix):].strip()
+                
+        # Aggiungi solo se non vuoto, non è metadata, e non è duplicato
+        line_normalized = line.lower().strip()
+        if line and not line.startswith('Type:') and not line.startswith('Concept:') and line_normalized not in seen_lines:
+            core_lines.append(line)
+            seen_lines.add(line_normalized)
+    
+    # Se abbiamo estratto contenuto, usalo; altrimenti fallback a tutto
+    result = ' '.join(core_lines) if core_lines else content_clean.strip()
+    
+    # Log per debug
+    if len(result) < len(content) * 0.5:  # Se abbiamo rimosso > 50%
+        logger.debug(f"Contenuto estratto: {len(content)} -> {len(result)} chars")
+    
+    # Normalizza in lowercase per embedding (migliora similarity)
+    result = normalize_for_embedding(result, metadata)
+    
+    return result
+
 def get_embedding_model():
     """
     Ottiene il modello di embedding con caching singleton.
     Carica il modello una sola volta e lo riutilizza per tutte le query successive.
+    
+    Modello: paraphrase-multilingual-MiniLM-L12-v2
+    - Supporta 50+ lingue (italiano incluso)
+    - Dimensione embedding: 384
+    - Ottimo per documenti italiani
     
     Returns:
         SentenceTransformer: Modello caricato e pronto all'uso
@@ -30,9 +122,11 @@ def get_embedding_model():
     if _embedding_model_cache is None:
         try:
             from sentence_transformers import SentenceTransformer
-            logger.info("Caricamento modello sentence-transformers/all-MiniLM-L6-v2 (prima volta)...")
-            _embedding_model_cache = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-            logger.info("Modello caricato e cached con successo")
+            # Modello multilingue per supporto italiano ottimale
+            model_name = 'paraphrase-multilingual-MiniLM-L12-v2'
+            logger.info(f"Caricamento modello {model_name} (multilingue, supporta italiano)...")
+            _embedding_model_cache = SentenceTransformer(model_name)
+            logger.info("Modello multilingue caricato e cached con successo")
         except ImportError:
             logger.error("sentence-transformers non disponibile")
             return None
@@ -157,12 +251,21 @@ class DocumentManager:
                                 # Skip tipi non supportati
                                 logger.warning(f"Tipo non supportato per metadata ChromaDB: {key}={type(value)}")
                         
+                        # EMBEDDING OPTIMIZATION: Embedda solo il contenuto core (senza timestamp/metadata)
+                        # Questo migliora significativamente la similarity per query semantiche
+                        core_content = extract_core_content(content, metadata)
+                        
                         collection.add(
-                            documents=[content],
+                            documents=[core_content],  # ✅ Solo contenuto core
                             metadatas=[chroma_metadata],
                             ids=[doc_id]
                         )
-                        logger.info(f"Documento {doc_id} aggiunto anche a ChromaDB (vettorizzato)")
+                        
+                        # CRITICAL FIX: Aggiorna embedding_status a 'ready' dopo indicizzazione
+                        self.metadata_db.update_metadata(doc_id, 'embedding_status', 'ready')
+                        self.metadata_db.update_metadata(doc_id, 'embedding_updated_at', datetime.now().isoformat())
+                        
+                        logger.info(f"Documento {doc_id} aggiunto a ChromaDB e embedding_status aggiornato a 'ready'")
                     else:
                         logger.warning(f"ChromaDB collection non disponibile per {doc_id}")
                 except Exception as e:
@@ -346,7 +449,9 @@ class DocumentManager:
             start_embed = time.time()
             model = get_embedding_model()
             if model is not None:
-                query_embedding = model.encode([query], normalize_embeddings=True)[0].tolist()
+                # Normalizza query in lowercase per consistenza con documenti indicizzati
+                normalized_query = normalize_for_embedding(query)
+                query_embedding = model.encode([normalized_query], normalize_embeddings=True)[0].tolist()
                 embed_time = (time.time() - start_embed) * 1000
                 
                 # Usa query_embeddings invece di query_texts per consistenza del modello
@@ -564,8 +669,12 @@ class DocumentManager:
                                         chroma_metadata[key] = json.dumps(value, ensure_ascii=False)
                                     elif isinstance(value, (str, int, float, bool)):
                                         chroma_metadata[key] = value
+                                
+                                # EMBEDDING OPTIMIZATION: Embedda solo il contenuto core
+                                core_content = extract_core_content(content, metadata)
+                                
                                 collection.add(
-                                    documents=[content],
+                                    documents=[core_content],  # ✅ Solo contenuto core
                                     metadatas=[chroma_metadata],
                                     ids=[doc_id]
                                 )

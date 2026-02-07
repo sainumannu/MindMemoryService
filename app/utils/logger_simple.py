@@ -57,10 +57,22 @@ def setup_logging(log_level=None):
     # Handler per console
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(log_format)
+    console_handler.setLevel(numeric_level)
     logger.addHandler(console_handler)
+    
+    # FORZA il logger di app.graph a mostrare i log
+    graph_logger = logging.getLogger("app.graph")
+    graph_logger.setLevel(logging.INFO)
+    graph_logger.propagate = True
     
     # Imposta livelli specifici per librerie esterne
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("fastapi").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    
+    # FORZA flush immediato
+    sys.stdout.reconfigure(line_buffering=True)
     
     return logger

@@ -112,7 +112,14 @@ async def app_lifespan(app: FastAPI):
             interval=1.0,  # Controlla ogni secondo
             exclude_patterns=[
                 "*.pyc", "*.pyo", "*.pyd", "__pycache__/*", "*.git/*", "*.log",
-                "logs/*", "event_buffer.db", "*.db", "temp/*"
+                "logs/*", "event_buffer.db", "*.db", "temp/*",
+                # Escludi directory ChromaDB (file binari interni)
+                "data/chroma_db/*", "data\\chroma_db\\*", 
+                "*/chroma_db/*", "*\\chroma_db\\*",
+                "*.bin",  # File binari ChromaDB
+                # Escludi altre directory di sistema
+                ".venv/*", "venv/*", "node_modules/*", 
+                "backups/*", ".pytest_cache/*"
             ]
         )
         logger.info(f"File watcher avviato su {len(monitored_paths)} percorsi")
@@ -219,6 +226,29 @@ if __name__ == "__main__":
     logger.info(f"Avvio MindMemoryService su http://{host}:{port}")
     logger.info(f"Configurazione: {workers} worker(s), SQLite WAL mode, async FastAPI")
     
+    # Configurazione uvicorn per NON sovrascrivere il logging
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["default"], "level": "WARNING"},
+            "uvicorn.error": {"handlers": ["default"], "level": "WARNING"},
+            "uvicorn.access": {"handlers": ["default"], "level": "WARNING"},
+        },
+    }
+    
     # Avvia server Uvicorn
     if workers > 1:
         # Multi-worker: usa uvicorn programmatically con gunicorn-style
@@ -229,7 +259,7 @@ if __name__ == "__main__":
             port=port,
             workers=workers,
             reload=False,
-            log_level=os.getenv("LOG_LEVEL", "info").lower()
+            log_config=log_config
         )
     else:
         # Single-worker: configurazione standard
@@ -238,5 +268,5 @@ if __name__ == "__main__":
             host=host, 
             port=port, 
             reload=False,
-            log_level=os.getenv("LOG_LEVEL", "info").lower()
+            log_config=log_config
         )
