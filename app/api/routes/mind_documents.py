@@ -19,8 +19,11 @@ from fastapi import APIRouter, HTTPException, Body, status
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import uuid
+import logging
 
 from app.utils.document_manager import DocumentManager
+
+logger = logging.getLogger(__name__)
 
 # Create router for Mind-specific endpoints
 router = APIRouter(prefix="/mind/documents", tags=["mind-documents"])
@@ -56,8 +59,11 @@ def validate_document_input(data: Dict[str, Any], require_collection: bool = Tru
     Raises:
         HTTPException: Se validazione fallisce
     """
+    logger.info(f"[MIND_DOCS] Validating document input: {list(data.keys())}")
+    
     # Verifica che content sia presente e non vuoto
     if 'content' not in data:
+        logger.warning(f"[MIND_DOCS] REJECTED: Missing 'content' field. Keys present: {list(data.keys())}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Campo 'content' obbligatorio per Mind documents. Impossibile creare documento senza contenuto."
@@ -65,6 +71,7 @@ def validate_document_input(data: Dict[str, Any], require_collection: bool = Tru
     
     content = data.get('content', '').strip()
     if not content:
+        logger.warning(f"[MIND_DOCS] REJECTED: Empty 'content' field (length: {len(data.get('content', ''))})")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Campo 'content' non può essere vuoto. Il contenuto semantico è obbligatorio per Mind."
@@ -72,6 +79,7 @@ def validate_document_input(data: Dict[str, Any], require_collection: bool = Tru
     
     # Verifica che metadata sia presente e non vuoto
     if 'metadata' not in data:
+        logger.warning(f"[MIND_DOCS] REJECTED: Missing 'metadata' field. Keys present: {list(data.keys())}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Campo 'metadata' obbligatorio per Mind documents. Impossibile creare documento senza metadati."
@@ -79,6 +87,10 @@ def validate_document_input(data: Dict[str, Any], require_collection: bool = Tru
     
     metadata = data.get('metadata')
     if not isinstance(metadata, dict) or len(metadata) == 0:
+        logger.warning(
+            f"[MIND_DOCS] REJECTED: Invalid 'metadata' field. "
+            f"Type: {type(metadata).__name__}, Length: {len(metadata) if isinstance(metadata, dict) else 'N/A'}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Campo 'metadata' deve essere un oggetto non vuoto. I metadati sono obbligatori per Mind."
@@ -86,18 +98,29 @@ def validate_document_input(data: Dict[str, Any], require_collection: bool = Tru
     
     # Verifica collection se richiesto
     if require_collection and 'collection' not in data:
+        logger.warning(f"[MIND_DOCS] REJECTED: Missing 'collection' field. Keys present: {list(data.keys())}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Campo 'collection' obbligatorio per Mind documents."
         )
     
     # Normalizza i dati
-    return {
+    validated = {
         'id': data.get('id') or f"doc{uuid.uuid4().hex[:8]}",
         'collection': data.get('collection', 'mind_default'),
         'content': content,
         'metadata': metadata
     }
+    
+    logger.info(
+        f"[MIND_DOCS] Validation passed:\n"
+        f"  ID: {validated['id']}\n"
+        f"  Collection: {validated['collection']}\n"
+        f"  Content length: {len(content)} chars\n"
+        f"  Metadata keys: {list(metadata.keys())}"
+    )
+    
+    return validated
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -127,6 +150,8 @@ async def create_mind_document(document: Dict[str, Any] = Body(...)):
         HTTPException 500: If save fails
     """
     try:
+        logger.info(f"[MIND_DOCS] CREATE request received with keys: {list(document.keys())}")
+        
         # Valida input
         validated_doc = validate_document_input(document, require_collection=True)
         
@@ -150,6 +175,14 @@ async def create_mind_document(document: Dict[str, Any] = Body(...)):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Errore durante il salvataggio del documento in Mind"
             )
+        
+        logger.info(
+            f"[MIND_DOCS] Document created successfully:\n"
+            f"  ID: {validated_doc['id']}\n"
+            f"  Collection: {validated_doc['collection']}\n"
+            f"  Content: {len(validated_doc['content'])} chars\n"
+            f"  Metadata: {len(validated_doc['metadata'])} keys"
+        )
         
         # Verifica il salvataggio
         saved_doc = manager.get_document(validated_doc['id'])
@@ -387,6 +420,8 @@ async def query_mind_documents(
     try:
         query_text = query_data.get('query_text', '').strip() if isinstance(query_data, dict) else ''
         
+        logger.info(f"[MIND_QUERY] Collection: {collection_name}, Query: '{query_text}', Limit: {limit}")
+        
         if not query_text:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -411,6 +446,12 @@ async def query_mind_documents(
         
         if not results:
             results = []
+        
+        # Log top 3 results with similarity scores
+        if results:
+            top_results = results[:3]
+            similarity_info = ", ".join([f"{r.get('similarity_score', 0):.4f}" for r in top_results])
+            logger.info(f"[MIND_QUERY] Top {len(top_results)} similarities: [{similarity_info}]")
         
         return {
             "collection": collection_name,

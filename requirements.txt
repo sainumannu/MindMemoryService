@@ -7,7 +7,9 @@ requests>=2.31.0
 schedule>=1.2.0
 
 # Per ChromaDB - versione compatibile con Python 3.13
+numpy==1.26.4
 chromadb==0.4.24
+sentence-transformers>=2.2.2
 langchain>=0.0.267
 openai>=1.1.1
 
